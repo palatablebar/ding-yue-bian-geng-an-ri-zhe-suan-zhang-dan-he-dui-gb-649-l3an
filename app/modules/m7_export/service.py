@@ -25,6 +25,15 @@ def segments_payload(store, run_id: str) -> dict:
             "filename": f"segments-{run_id}.csv", "count": len(rows)}
 
 
+def overages_payload(store, run_id: str) -> dict:
+    """超额明细导出：与账单页同源（同一张 overages 表），逐条带账单号与段序。"""
+    rows = store.list_overages(run_id)
+    invoices = {row["invoice_id"]: row for row in store.list_invoices(run_id)}
+    text = csv_out.overages_csv(rows, invoices)
+    return {"rows": rows, "csv": csv_out.with_bom(text),
+            "filename": f"overages-{run_id}.csv", "count": len(rows)}
+
+
 def manifest_payload(store, run_id: str) -> dict:
     data = store.get_manifest(run_id) or {}
     return {

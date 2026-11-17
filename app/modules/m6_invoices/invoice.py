@@ -1,7 +1,7 @@
 """账单：一张订阅一个计费期间一张账单，金额以「分」整数记账。
 
-账单金额只有一个来源：抵扣行（预缴/抵扣/补收）分配后的分。
-分段金额的分只用于明细核对，两者都必须加总到同一个总额。
+账单金额只有一个来源：抵扣行（预缴/抵扣/补收）分配后的分，加上超额行分配后的分。
+分段金额的分只用于明细核对，三组加总必须落到同一个总额。
 """
 from __future__ import annotations
 
@@ -22,18 +22,25 @@ def _sum_cents(components: list[dict], kind: str) -> int:
     return sum(int(row["cents"]) for row in components if row["kind"] == kind)
 
 
-def round_adjusted(components: list[dict]) -> bool:
+def round_adjusted(components: list[dict], overages: list[dict] | None = None) -> bool:
     """分量各自四舍五入与合计四舍五入不一致时，说明用了最大余额法补差。"""
+    rows = list(components) + list(overages or [])
     naive = sum(int((Decimal(row["exact_text"]) * 100).quantize(
         Decimal("1"), rounding=ROUND_HALF_UP)) for row in components)
-    allocated = sum(int(row["cents"]) for row in components)
+    naive += sum(int((Decimal(row["exact_text"]) * 100).quantize(
+        Decimal("1"), rounding=ROUND_HALF_UP)) for row in (overages or []))
+    allocated = sum(int(row["cents"]) for row in rows)
     return naive != allocated
 
 
-def build_invoice(sub: dict, segments: list[dict], components: list[dict]) -> dict:
+def build_invoice(sub: dict, segments: list[dict], components: list[dict],
+                  overages: list[dict] | None = None) -> dict:
+    overages = overages or []
     charge_cents = _sum_cents(components, "charge")
     credit_cents = -_sum_cents(components, "credit")
-    total_cents = charge_cents - credit_cents
+    overage_exact = sum((Decimal(row["exact_text"]) for row in overages), Decimal("0"))
+    overage_cents = sum(int(row["cents"]) for row in overages)
+    total_cents = charge_cents - credit_cents + overage_cents
     exact_total = sum((Decimal(row["amount_exact"]) for row in segments), Decimal("0"))
     billed_days = sum(int(row["days"]) for row in segments
                       if row["state"] not in config.ZERO_RATE_STATES)
@@ -49,7 +56,9 @@ def build_invoice(sub: dict, segments: list[dict], components: list[dict]) -> di
             flags.append(code)
     if total_cents == 0:
         flags.append("R_INVOICE_ZERO")
-    if components and round_adjusted(components):
+    if overage_cents:
+        flags.append("R_OVERAGE")
+    if (components or overages) and round_adjusted(components, overages):
         flags.append("R_ROUND_ADJUST")
     status = "zero" if total_cents == 0 else "ok"
     return {
@@ -63,22 +72,29 @@ def build_invoice(sub: dict, segments: list[dict], components: list[dict]) -> di
         "free_days": free_days,
         "charge_cents": charge_cents,
         "credit_cents": credit_cents,
+        "overage_exact": str(overage_exact),
+        "overage_cents": overage_cents,
         "total_cents": total_cents,
         "exact_total": str(exact_total),
+        "overage_total_exact": str(overage_exact),
         "status": status,
         "flags": flags,
         "source_row": int(sub["row_no"]),
     }
 
 
-def detail(invoice: dict, segments: list[dict], components: list[dict]) -> dict:
+def detail(invoice: dict, segments: list[dict], components: list[dict],
+           overages: list[dict] | None = None) -> dict:
     return {
         "invoice": {**invoice, "amount": rounding.cents_text(invoice["total_cents"])},
         "segments": [{
             **row,
             "amount": rounding.cents_text(row["amount_cents"]),
+            "overage_amount": rounding.cents_text(row.get("overage_cents", 0)),
             "state_label": config.STATE_LABELS.get(row["state"], row["state"]),
         } for row in segments],
         "components": [{**row, "amount": rounding.cents_text(row["cents"])}
                        for row in components],
+        "overages": [{**row, "amount": rounding.cents_text(row["cents"])}
+                     for row in (overages or [])],
     }

@@ -36,8 +36,9 @@ async function runImport() {
   toast("采信中…", "muted");
   const subscriptions = document.getElementById("sub-file")?.value.trim();
   const changes = document.getElementById("chg-file")?.value.trim();
+  const usage = document.getElementById("usage-file")?.value.trim();
   try {
-    const data = await postJSON("/api/subscriptions/import", { subscriptions, changes });
+    const data = await postJSON("/api/subscriptions/import", { subscriptions, changes, usage });
     const totals = data.totals || {};
     const label = data.reused ? "复用" : "完成";
     toast(`${label} ${data.run_id} · 账单 ${totals.invoices ?? 0} 张 · ${totals.invoice_cents ?? 0} 分`,
@@ -45,6 +46,32 @@ async function runImport() {
     setTimeout(() => window.location.assign(`/?run_id=${encodeURIComponent(data.run_id)}`), 600);
   } catch (error) {
     toast(error.message, "error");
+  } finally {
+    state.busy = false;
+  }
+}
+
+function usageToast(text, tone) {
+  const node = document.getElementById("usage-toast");
+  if (!node) return;
+  node.textContent = text;
+  node.className = tone === "error" ? "notice" : "toast";
+}
+
+async function runUsage() {
+  if (state.busy) return;
+  state.busy = true;
+  usageToast("采信用量并重算…", "muted");
+  const usage = document.getElementById("usage-append")?.value.trim();
+  try {
+    const data = await postJSON("/api/changes/usage/import", { usage });
+    const totals = data.invoices || {};
+    const label = data.reused ? "该文件已采信，未重复累计" : "已重算";
+    usageToast(`${label} · 账单 ${totals.invoice_cents ?? 0} 分 · 超额 ${totals.overage_cents ?? 0} 分`,
+      "muted");
+    setTimeout(() => window.location.reload(), 900);
+  } catch (error) {
+    usageToast(`${error.message}（账单保持上一版）`, "error");
   } finally {
     state.busy = false;
   }
@@ -67,12 +94,14 @@ async function checkDays() {
 
 document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("run-import")?.addEventListener("click", runImport);
+  document.getElementById("run-usage")?.addEventListener("click", runUsage);
   document.getElementById("day-check")?.addEventListener("click", checkDays);
   document.querySelectorAll(".field input").forEach((input) => {
     input.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
-        if (document.getElementById("run-import")) runImport();
+        if (input.id === "usage-append") runUsage();
+        else if (document.getElementById("run-import")) runImport();
         else if (document.getElementById("day-check")) checkDays();
       }
     });

@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS segments (
     plan TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL DEFAULT 'active',
     monthly TEXT NOT NULL DEFAULT '',
+    metric TEXT NOT NULL DEFAULT '',
+    included_units TEXT NOT NULL DEFAULT '0',
+    allocated_units TEXT NOT NULL DEFAULT '0',
+    overage_units TEXT NOT NULL DEFAULT '0',
+    overage_cents INTEGER NOT NULL DEFAULT 0,
     amount_exact TEXT NOT NULL DEFAULT '0',
     amount_cents INTEGER NOT NULL DEFAULT 0,
     flags_json TEXT NOT NULL DEFAULT '[]'
@@ -129,13 +134,65 @@ CREATE TABLE IF NOT EXISTS invoices (
     period_days INTEGER NOT NULL,
     billed_days INTEGER NOT NULL,
     free_days INTEGER NOT NULL,
-    charge_cents INTEGER NOT NULL,
-    credit_cents INTEGER NOT NULL,
-    total_cents INTEGER NOT NULL,
+    charge_cents INTEGER NOT NULL DEFAULT 0,
+    credit_cents INTEGER NOT NULL DEFAULT 0,
+    overage_exact TEXT NOT NULL DEFAULT '0',
+    overage_cents INTEGER NOT NULL DEFAULT 0,
+    total_cents INTEGER NOT NULL DEFAULT 0,
     exact_total TEXT NOT NULL DEFAULT '0',
+    overage_total_exact TEXT NOT NULL DEFAULT '0',
     status TEXT NOT NULL DEFAULT 'ok',
     flags_json TEXT NOT NULL DEFAULT '[]',
     source_row INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS plans (
+    run_id TEXT NOT NULL,
+    plan TEXT NOT NULL,
+    metric TEXT NOT NULL DEFAULT '',
+    included TEXT NOT NULL DEFAULT '0',
+    unit_price TEXT NOT NULL DEFAULT '0',
+    source TEXT NOT NULL DEFAULT 'catalog'
+);
+
+CREATE TABLE IF NOT EXISTS usage_rows (
+    run_id TEXT NOT NULL,
+    sub_id TEXT NOT NULL,
+    metric TEXT NOT NULL DEFAULT '',
+    units TEXT NOT NULL DEFAULT '0',
+    units_exact TEXT NOT NULL DEFAULT '0',
+    source_file TEXT NOT NULL DEFAULT '',
+    row_no INTEGER NOT NULL DEFAULT 0,
+    flags_json TEXT NOT NULL DEFAULT '[]'
+);
+
+CREATE TABLE IF NOT EXISTS usage_files (
+    run_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    encoding TEXT NOT NULL DEFAULT '',
+    bytes INTEGER NOT NULL DEFAULT 0,
+    rows INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'done'
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_file ON usage_files(run_id, sha256);
+
+CREATE TABLE IF NOT EXISTS overages (
+    run_id TEXT NOT NULL,
+    invoice_id TEXT NOT NULL,
+    sub_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    segment_seq INTEGER NOT NULL DEFAULT 0,
+    plan TEXT NOT NULL DEFAULT '',
+    metric TEXT NOT NULL DEFAULT '',
+    days INTEGER NOT NULL DEFAULT 0,
+    included_units TEXT NOT NULL DEFAULT '0',
+    allocated_units TEXT NOT NULL DEFAULT '0',
+    overage_units TEXT NOT NULL DEFAULT '0',
+    unit_price TEXT NOT NULL DEFAULT '0',
+    exact_text TEXT NOT NULL DEFAULT '0',
+    cents INTEGER NOT NULL DEFAULT 0,
+    flags_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS stages (
@@ -186,6 +243,33 @@ class Store:
         Path(self.path).resolve().parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
+        return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+    def _migrate(self, conn: sqlite3.Connection) -> None:
+        """老库就地补列：只加不删，已有行用默认值，不重算历史事实。"""
+        wanted = {
+            "segments": {
+                "metric": "TEXT NOT NULL DEFAULT ''",
+                "included_units": "TEXT NOT NULL DEFAULT '0'",
+                "allocated_units": "TEXT NOT NULL DEFAULT '0'",
+                "overage_units": "TEXT NOT NULL DEFAULT '0'",
+                "overage_cents": "INTEGER NOT NULL DEFAULT 0",
+            },
+            "invoices": {
+                "overage_exact": "TEXT NOT NULL DEFAULT '0'",
+                "overage_cents": "INTEGER NOT NULL DEFAULT 0",
+                "overage_total_exact": "TEXT NOT NULL DEFAULT '0'",
+            },
+        }
+        for table, columns in wanted.items():
+            existing = self._columns(conn, table)
+            for name, decl in columns.items():
+                if name not in existing:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
     @contextmanager
     def connect(self):
@@ -381,11 +465,17 @@ class Store:
             conn.execute("DELETE FROM segments WHERE run_id=?", (run_id,))
             conn.executemany(
                 """INSERT INTO segments (run_id, invoice_id, sub_id, seq, start_date,
-                        end_date, days, plan, state, monthly, amount_exact, amount_cents,
-                        flags_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        end_date, days, plan, state, monthly, metric, included_units,
+                        allocated_units, overage_units, overage_cents, amount_exact,
+                        amount_cents, flags_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(run_id, item["invoice_id"], item["sub_id"], int(item["seq"]),
                   item["start_date"], item["end_date"], int(item["days"]), item["plan"],
                   item["state"], str(item.get("monthly", "")),
+                  item.get("metric", ""), str(item.get("included_units", "0")),
+                  str(item.get("allocated_units", "0")),
+                  str(item.get("overage_units", "0")),
+                  int(item.get("overage_cents", 0)),
                   str(item.get("amount_exact", "0")), int(item.get("amount_cents", 0)),
                   json.dumps(item.get("flags", []), ensure_ascii=False)) for item in items],
             )
@@ -414,6 +504,15 @@ class Store:
                 "WHERE run_id=? AND invoice_id=? AND seq=?",
                 [(str(item["amount_exact"]), int(item["amount_cents"]), run_id,
                   item["invoice_id"], int(item["seq"])) for item in items],
+            )
+
+    def update_segment_overage_cents(self, run_id: str, items: list[dict]) -> None:
+        with self.connect() as conn:
+            conn.executemany(
+                "UPDATE segments SET overage_cents=? "
+                "WHERE run_id=? AND invoice_id=? AND seq=?",
+                [(int(item["overage_cents"]), run_id, item["invoice_id"], int(item["seq"]))
+                 for item in items],
             )
 
     # ---------- 抵扣行 ----------
@@ -455,13 +554,17 @@ class Store:
             conn.executemany(
                 """INSERT INTO invoices (run_id, invoice_id, sub_id, account, period_start,
                         period_end, period_days, billed_days, free_days, charge_cents,
-                        credit_cents, total_cents, exact_total, status, flags_json, source_row)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        credit_cents, overage_exact, overage_cents, total_cents,
+                        exact_total, overage_total_exact, status, flags_json, source_row)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [(run_id, item["invoice_id"], item["sub_id"], item.get("account", ""),
                   item["period_start"], item["period_end"], int(item["period_days"]),
                   int(item["billed_days"]), int(item["free_days"]),
                   int(item["charge_cents"]), int(item["credit_cents"]),
+                  str(item.get("overage_exact", "0")),
+                  int(item.get("overage_cents", 0)),
                   int(item["total_cents"]), str(item.get("exact_total", "0")),
+                  str(item.get("overage_total_exact", "0")),
                   item.get("status", "ok"),
                   json.dumps(item.get("flags", []), ensure_ascii=False),
                   int(item.get("source_row", 0))) for item in items],
@@ -551,10 +654,160 @@ class Store:
                 "SELECT json FROM manifests WHERE run_id=?", (run_id,)).fetchone()
         return _loads(row["json"], {}) if row else None
 
-    # ---------- 整体重算 ----------
-    def clear_derived(self, run_id: str) -> None:
-        """重算前清派生表；订阅、变更、隔离、输入摘要保留。"""
+    # ---------- 套餐额度目录 ----------
+    def put_plans(self, run_id: str, items: list[dict]) -> None:
         with self.connect() as conn:
-            for table in ("segments", "components", "invoices", "stages", "totals",
-                          "reconciliations"):
+            conn.execute("DELETE FROM plans WHERE run_id=?", (run_id,))
+            conn.executemany(
+                """INSERT INTO plans (run_id, plan, metric, included, unit_price, source)
+                   VALUES (?,?,?,?,?,?)""",
+                [(run_id, item["plan"], item.get("metric", ""),
+                  str(item["included"]), str(item["unit_price"]),
+                  item.get("source", "catalog")) for item in items],
+            )
+
+    def list_plans(self, run_id: str) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM plans WHERE run_id=? ORDER BY plan", (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    # ---------- 用量 ----------
+    def get_usage_file(self, run_id: str, sha256: str) -> dict | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM usage_files WHERE run_id=? AND sha256=?",
+                (run_id, sha256)).fetchone()
+        return dict(row) if row else None
+
+    def list_usage_files(self, run_id: str) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM usage_files WHERE run_id=? ORDER BY name, sha256",
+                (run_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_usage_file(self, run_id: str, item: dict) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """INSERT INTO usage_files (run_id, name, sha256, encoding, bytes, rows,
+                        status) VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(run_id, sha256) DO NOTHING""",
+                (run_id, item["name"], item["sha256"], item.get("encoding", ""),
+                 int(item.get("bytes", 0)), int(item.get("rows", 0)),
+                 item.get("status", "done")),
+            )
+
+    def replace_usage_rows(self, run_id: str, items: list[dict]) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM usage_rows WHERE run_id=?", (run_id,))
+            conn.executemany(
+                """INSERT INTO usage_rows (run_id, sub_id, metric, units, units_exact,
+                        source_file, row_no, flags_json) VALUES (?,?,?,?,?,?,?,?)""",
+                [(run_id, item["sub_id"], item.get("metric", ""), str(item["units"]),
+                  str(item.get("units_exact", item["units"])), item.get("source_file", ""),
+                  int(item.get("row_no", 0)),
+                  json.dumps(item.get("flags", []), ensure_ascii=False))
+                 for item in items],
+            )
+
+    def list_usage_rows(self, run_id: str) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM usage_rows WHERE run_id=? ORDER BY sub_id", (run_id,)
+            ).fetchall()
+        out = []
+        for row in rows:
+            data = dict(row)
+            data["flags"] = _loads(data.pop("flags_json", "[]"), [])
+            out.append(data)
+        return out
+
+    # ---------- 超额记录 ----------
+    def put_overages(self, run_id: str, items: list[dict]) -> None:
+        with self.connect() as conn:
+            conn.execute("DELETE FROM overages WHERE run_id=?", (run_id,))
+            conn.executemany(
+                """INSERT INTO overages (run_id, invoice_id, sub_id, seq, segment_seq,
+                        plan, metric, days, included_units, allocated_units, overage_units,
+                        unit_price, exact_text, cents, flags_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [(run_id, item["invoice_id"], item["sub_id"], int(item["seq"]),
+                  int(item.get("segment_seq", 0)), item.get("plan", ""),
+                  item.get("metric", ""), int(item.get("days", 0)),
+                  str(item.get("included_units", "0")),
+                  str(item.get("allocated_units", "0")),
+                  str(item.get("overage_units", "0")), str(item.get("unit_price", "0")),
+                  str(item["exact"]), int(item.get("cents", 0)),
+                  json.dumps(item.get("flags", []), ensure_ascii=False)) for item in items],
+            )
+
+    def list_overages(self, run_id: str, invoice_id: str | None = None) -> list[dict]:
+        with self.connect() as conn:
+            if invoice_id:
+                rows = conn.execute(
+                    "SELECT * FROM overages WHERE run_id=? AND invoice_id=? "
+                    "ORDER BY invoice_id, seq", (run_id, invoice_id)).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM overages WHERE run_id=? ORDER BY invoice_id, seq",
+                    (run_id,)).fetchall()
+        out = []
+        for row in rows:
+            data = dict(row)
+            data["flags"] = _loads(data.pop("flags_json", "[]"), [])
+            out.append(data)
+        return out
+
+    # ---------- 整体重算 ----------
+    DERIVED_TABLES = ("segments", "components", "invoices", "overages", "stages",
+                      "totals", "reconciliations")
+    # 失败恢复要覆盖「重算可能改到的全部表」：派生表 + 用量/隔离/订阅/变更/目录。
+    # 否则失败的用量上传会留下已登记的文件，重试命中 sha256 就永远不会重算。
+    SNAPSHOT_TABLES = DERIVED_TABLES + ("usage_rows", "usage_files", "quarantine",
+                                        "plans", "subscriptions", "changes", "inputs")
+
+    @contextmanager
+    def rebuild_transaction(self, run_id: str):
+        """重算的单一事务语义：失败时把派生表与清单原样写回。
+
+        SQLite 单连接事务无法跨 ``store`` 方法共享，因此用「先快照旧派生数据，
+        失败时原样写回」的补偿做法；每个 ``put_*`` 各自整表替换，不在这里预删，
+        这样只重算金额的入口（POST /api/proration）不会把分段先清空。
+        """
+        snapshot = self._snapshot_derived(run_id)
+        manifest = self.get_manifest(run_id)
+        try:
+            yield
+        except Exception:
+            self._restore_derived(run_id, snapshot, manifest)
+            raise
+
+    def _snapshot_derived(self, run_id: str) -> dict[str, list[sqlite3.Row]]:
+        snapshot: dict[str, list[sqlite3.Row]] = {}
+        with self.connect() as conn:
+            for table in self.SNAPSHOT_TABLES:
+                snapshot[table] = conn.execute(
+                    f"SELECT * FROM {table} WHERE run_id=?", (run_id,)).fetchall()
+        return snapshot
+
+    def _restore_derived(self, run_id: str, snapshot: dict[str, list],
+                         manifest: dict | None) -> None:
+        with self.connect() as conn:
+            for table, rows in snapshot.items():
+                conn.execute(f"DELETE FROM {table} WHERE run_id=?", (run_id,))
+                if not rows:
+                    continue
+                columns = list(rows[0].keys())
+                placeholders = ",".join("?" for _ in columns)
+                conn.executemany(
+                    f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+                    [tuple(row[column] for column in columns) for row in rows])
+        if manifest is not None:
+            self.put_manifest(run_id, manifest)
+
+    def clear_derived(self, run_id: str) -> None:
+        """重算前清派生表；订阅、变更、隔离、输入摘要、用量保留。"""
+        with self.connect() as conn:
+            for table in self.DERIVED_TABLES:
                 conn.execute(f"DELETE FROM {table} WHERE run_id=?", (run_id,))

@@ -17,8 +17,9 @@
           <th class="num">期间天数</th>
           <th class="num">计费</th>
           <th class="num">免费</th>
-          <th class="num">分段(元)</th>
+          <th class="num">套餐费(元)</th>
           <th class="num">抵扣(元)</th>
+          <th class="num">超额(元)</th>
           <th class="num">账单额(元)</th>
           <th>状态</th>
           <th>标记</th>
@@ -35,6 +36,7 @@
           <td class="num">{{ row.free_days }}</td>
           <td class="num">{{ row.charge }}</td>
           <td class="num">{{ row.credit }}</td>
+          <td class="num">{{ row.overage }}</td>
           <td class="num">{{ row.amount }}</td>
           <td class="nowrap">{{ row.status|invoice_status }}</td>
           <td>
@@ -87,12 +89,64 @@
 
 <section class="block">
   <div class="block-head">
+    <h2>超额明细</h2>
+    <span class="sub">{{ tot.get("overage_rows", 0) if tot else 0 }} 条 · 超额合计 {{ (tot.get("overage_cents", 0) if tot else 0)|money }} 元 · 额度随套餐分段天数成立</span>
+  </div>
+  {% if overages %}
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>账单号</th>
+          <th>订阅号</th>
+          <th class="num">段序</th>
+          <th>套餐</th>
+          <th class="num">覆盖天数</th>
+          <th>计量单位</th>
+          <th class="num">段包含额度</th>
+          <th class="num">段分摊用量</th>
+          <th class="num">超额用量</th>
+          <th class="num">超额金额(元)</th>
+          <th>标记</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in overages %}
+        <tr>
+          <td><code>{{ row.invoice_id }}</code></td>
+          <td><code>{{ row.sub_id }}</code></td>
+          <td class="num">{{ row.segment_seq + 1 }}</td>
+          <td>{{ row.plan }}</td>
+          <td class="num">{{ row.days }}</td>
+          <td>{{ row.metric or "—" }}</td>
+          <td class="num">{{ row.included_units }}</td>
+          <td class="num">{{ row.allocated_units }}</td>
+          <td class="num">{{ row.overage_units }}</td>
+          <td class="num">{{ row.cents|money }}</td>
+          <td>
+            <div class="marks">
+              {% for code in row.flags %}<span class="tag tag-info">{{ reason_labels.get(code, code) }}</span>{% endfor %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="empty">这一批没有超额：未上传用量，或各段用量都在包含额度内。</p>
+  {% endif %}
+</section>
+
+<section class="block">
+  <div class="block-head">
     <h2>导出</h2>
-    <span class="sub">{{ totals.get("segments", 0) }} 段 · {{ totals.get("components", 0) }} 抵扣行</span>
+    <span class="sub">{{ totals.get("segments", 0) }} 段 · {{ totals.get("components", 0) }} 抵扣行 · {{ totals.get("overages", 0) }} 超额行</span>
   </div>
   <ul class="link-list">
     <li><a class="btn" href="/api/export/invoices.csv">账单 CSV</a></li>
     <li><a class="btn" href="/api/export/segments.csv">分段 CSV</a></li>
+    <li><a class="btn" href="/api/export/overages.csv">超额 CSV</a></li>
     <li><a class="btn" href="/api/export/manifest.json">清单 JSON</a></li>
     <li><a class="btn btn-ghost" href="/api/quarantine.csv">隔离区 CSV</a></li>
   </ul>

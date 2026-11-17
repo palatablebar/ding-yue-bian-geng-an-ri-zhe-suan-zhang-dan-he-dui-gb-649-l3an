@@ -25,8 +25,10 @@ def rebuild(store, run_id: str, settings) -> dict:
     subs = {sub["sub_id"]: sub for sub in store.list_subscriptions(run_id)}
     segments = store.list_segments(run_id)
     components = store.list_components(run_id)
+    overages = store.list_overages(run_id)
     segment_groups = _group(segments)
     component_groups = _group(components)
+    overage_groups = _group(overages)
 
     invoices: list[dict] = []
     for invoice_id, rows in sorted(segment_groups.items()):
@@ -34,13 +36,15 @@ def rebuild(store, run_id: str, settings) -> dict:
         if sub is None:
             continue
         invoices.append(invoice_mod.build_invoice(
-            sub, rows, component_groups.get(invoice_id, [])))
+            sub, rows, component_groups.get(invoice_id, []),
+            overage_groups.get(invoice_id, [])))
 
     store.put_invoices(run_id, invoices)
     ledgers = reconcile.build(counters=counters, invoices=invoices,
-                              segments=segments, components=components)
+                              segments=segments, components=components,
+                              overages=overages)
     store.put_reconciliations(run_id, ledgers)
-    totals = reconcile.totals(counters, invoices, segments, components)
+    totals = reconcile.totals(counters, invoices, segments, components, overages)
     store.put_totals(run_id, totals)
     return {
         "summary": {
@@ -48,6 +52,7 @@ def rebuild(store, run_id: str, settings) -> dict:
             "period_days": totals["period_days"],
             "charge_cents": totals["charge_cents"],
             "credit_cents": totals["credit_cents"],
+            "overage_cents": totals["overage_cents"],
             "invoice_cents": totals["invoice_cents"],
             "zero_invoices": totals["zero_invoices"],
             "money_unit": config.MONEY_UNIT,
@@ -69,6 +74,7 @@ def invoice_rows(store, run_id: str) -> list[dict]:
             "amount": rounding.cents_text(row["total_cents"]),
             "charge": rounding.cents_text(row["charge_cents"]),
             "credit": rounding.cents_text(row["credit_cents"]),
+            "overage": rounding.cents_text(row.get("overage_cents", 0)),
             "leap": bool(sub.get("leap", 0)),
             "range_label": f"[{row['period_start']}, {row['period_end']})",
         })
@@ -81,7 +87,8 @@ def detail(store, run_id: str, invoice_id: str) -> dict | None:
         return None
     segments = store.list_segments(run_id, invoice_id)
     components = store.list_components(run_id, invoice_id)
-    return invoice_mod.detail(row, segments, components)
+    overages = store.list_overages(run_id, invoice_id)
+    return invoice_mod.detail(row, segments, components, overages)
 
 
 def overview(store, run_id: str) -> dict:
@@ -89,4 +96,5 @@ def overview(store, run_id: str) -> dict:
         "invoices": invoice_rows(store, run_id),
         "ledgers": store.list_reconciliations(run_id),
         "totals": store.list_totals(run_id),
+        "overages": store.list_overages(run_id),
     }

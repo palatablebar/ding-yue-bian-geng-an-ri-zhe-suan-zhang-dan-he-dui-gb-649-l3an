@@ -45,10 +45,21 @@ REASONS: dict[str, tuple[str, str]] = {
     "R_DST_GAP": ("warn", "本地时刻落在夏令时跳过段"),
     "R_CHANGE_OUT_OF_PERIOD": ("warn", "变更生效日在账单期间外"),
     "R_CHANGE_ON_PERIOD_START": ("warn", "变更生效日等于期间首日"),
+    # ---- 用量与超额 ----
+    "R_USAGE_FORMAT": ("error", "用量格式无法解析"),
+    "R_USAGE_MISSING": ("error", "用量缺失"),
+    "R_UNITS_PRECISION": ("info", "用量超过两位小数"),
+    "R_DUP_USAGE_KEY": ("error", "用量订阅号重复且取值冲突"),
+    "R_DUP_USAGE_ROW": ("info", "用量订阅号重复且取值相同"),
+    "R_USAGE_UNKNOWN_SUB": ("error", "用量引用未知订阅"),
+    "R_PLAN_UNKNOWN": ("warn", "套餐不在额度目录，超额按 0 额度留痕"),
+    "R_USAGE_ALLOCATED": ("info", "整月用量按套餐分段天数分摊"),
+    "R_OVERAGE_ALLOCATED": ("info", "超额金额按最大余额法分到分"),
     # ---- 账单 ----
     "R_DUP_INVOICE": ("error", "同一订阅同一期间出现两张账单"),
     "R_INVOICE_ZERO": ("info", "账单金额为零"),
     "R_ROUND_ADJUST": ("info", "尾差按最大余额分配到分"),
+    "R_OVERAGE": ("info", "账单含超额用量费用"),
 }
 
 LEVEL_LABELS = {"error": "隔离", "warn": "复核", "info": "归一"}

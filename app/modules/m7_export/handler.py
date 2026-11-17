@@ -34,6 +34,18 @@ def segments_csv(request: Request) -> Response:
     )
 
 
+@router.get("/overages.csv")
+def overages_csv(request: Request) -> Response:
+    run = web.run_or_404(request)
+    data = service.overages_payload(request.app.state.store, run["run_id"])
+    return Response(
+        content=data["csv"], media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{data["filename"]}"',
+                 "X-Row-Count": str(data["count"])},
+    )
+
+
 @router.get("/manifest.json")
 def manifest_json(request: Request) -> Response:
     run = web.run_or_404(request)

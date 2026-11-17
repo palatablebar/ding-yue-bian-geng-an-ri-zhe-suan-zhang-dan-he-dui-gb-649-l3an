@@ -162,6 +162,33 @@ def normalize_state(text: str) -> Parsed:
     return Parsed(value) if value else Parsed(None, "R_STATE_UNKNOWN")
 
 
+def normalize_units(text: str) -> Parsed:
+    """用量归一：千分位、全角、单位后缀；允许两位小数，负数为非法。"""
+    raw = (text or "").strip()
+    if _is_sentinel(raw):
+        return Parsed(None, "R_USAGE_MISSING")
+    flags: list[str] = []
+    if any(ch in raw for ch in "０１２３４５６７８９"):
+        flags.append("R_PRICE_FULLWIDTH")
+    clean = to_halfwidth(raw).replace(" ", "")
+    if "," in clean:
+        flags.append("R_PRICE_THOUSANDS")
+        clean = clean.replace(",", "")
+    match = re.match(r"^(\d+(?:\.\d+)?)\s*([^\d\s]*)$", clean)
+    if not match:
+        return Parsed(None, "R_USAGE_FORMAT", flags)
+    number, _unit = match.groups()
+    try:
+        value = Decimal(number)
+    except InvalidOperation:
+        return Parsed(None, "R_USAGE_FORMAT", flags)
+    if value < 0:
+        return Parsed(None, "R_USAGE_FORMAT", flags)
+    if value.as_tuple().exponent < -2:
+        flags.append("R_UNITS_PRECISION")
+    return Parsed(value, None, flags)
+
+
 def normalize_kind(text: str) -> Parsed:
     raw = to_halfwidth((text or "").strip())
     value = config.CHANGE_KINDS.get(raw)

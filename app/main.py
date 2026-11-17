@@ -84,6 +84,7 @@ def create_app(settings: config.Settings | None = None) -> FastAPI:
         return _render(request, "index.html", "index", runs=runs,
                        sample_subscriptions=settings.default_subscriptions,
                        sample_changes=settings.default_changes,
+                       sample_usage=settings.default_usage,
                        stages=store.list_stages(run["run_id"]) if run else [],
                        ledgers=store.list_reconciliations(run["run_id"]) if run else [],
                        totals=store.list_totals(run["run_id"]) if run else {})
@@ -135,9 +136,10 @@ def create_app(settings: config.Settings | None = None) -> FastAPI:
         store = app.state.store
         run = app.state.ctx.current_run(request.query_params.get("run_id"))
         data = invoice_service.overview(store, run["run_id"]) if run else {
-            "invoices": [], "ledgers": [], "totals": {}}
+            "invoices": [], "ledgers": [], "totals": {}, "overages": []}
         return _render(request, "invoices.html", "invoices", invoices=data["invoices"],
-                       ledgers=data["ledgers"], totals=data["totals"])
+                       ledgers=data["ledgers"], totals=data["totals"],
+                       overages=data["overages"], tot=data["totals"])
 
     def _head_ok() -> Response:
         return Response(status_code=200, media_type="text/html; charset=utf-8")

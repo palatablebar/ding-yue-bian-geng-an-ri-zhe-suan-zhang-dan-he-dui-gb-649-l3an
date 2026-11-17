@@ -21,6 +21,10 @@
           <th class="num">月价(元)</th>
           <th class="num">日价(元)</th>
           <th class="num">金额(元)</th>
+          <th class="num">段包含额度</th>
+          <th class="num">段分摊用量</th>
+          <th class="num">超额用量</th>
+          <th class="num">超额(元)</th>
           <th>标记</th>
         </tr>
       </thead>
@@ -37,6 +41,10 @@
           <td class="num">{{ row.monthly|amount }}</td>
           <td class="num">{{ row.daily[:10] }}</td>
           <td class="num">{{ row.amount }}</td>
+          <td class="num">{{ row.included_units }}</td>
+          <td class="num">{{ row.allocated_units }}</td>
+          <td class="num">{{ row.overage_units }}</td>
+          <td class="num">{{ row.overage }}</td>
           <td>
             <div class="marks">
               {% for code in row.flags %}<span class="tag tag-warn">{{ reason_labels.get(code, code) }}</span>{% endfor %}

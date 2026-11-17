@@ -25,6 +25,12 @@ class Segment:
     monthly: Decimal
     flags: list[str] = field(default_factory=list)
     change_id: str = ""
+    metric: str = ""
+    included_units: Decimal = Decimal("0")
+    allocated_units: Decimal = Decimal("0")
+    overage_units: Decimal = Decimal("0")
+    overage_exact: Decimal = Decimal("0")
+    unit_price: Decimal = Decimal("0")
 
 
 def parse_price(value) -> Decimal:
@@ -111,6 +117,11 @@ def segment_rows(invoice_id: str, sub: dict, segments: list[Segment]) -> list[di
             "plan": segment.plan,
             "state": segment.state,
             "monthly": str(segment.monthly),
+            "metric": segment.metric,
+            "included_units": str(segment.included_units),
+            "allocated_units": str(segment.allocated_units),
+            "overage_units": str(segment.overage_units),
+            "overage_cents": 0,
             "amount_exact": "0",
             "amount_cents": 0,
             "flags": segment.flags,

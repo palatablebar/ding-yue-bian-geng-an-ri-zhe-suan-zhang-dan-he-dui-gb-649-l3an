@@ -59,6 +59,19 @@ function renderInvoice(body, data) {
       [row.days, true], [row.amount, true],
     ]),
   ));
+
+  if (data.overages && data.overages.length) {
+    body.appendChild(el("h3", "", "超额明细"));
+    body.appendChild(buildTable(
+      [["段序", true], ["套餐", false], ["覆盖天数", true], ["段包含额度", true],
+       ["段分摊用量", true], ["超额用量", true], ["超额金额(元)", true]],
+      data.overages.map((row) => [
+        [row.segment_seq + 1, true], [row.plan, false], [row.days, true],
+        [row.included_units, true], [row.allocated_units, true],
+        [row.overage_units, true], [row.amount, true],
+      ]),
+    ));
+  }
 }
 
 async function loadInvoice(invoiceId) {

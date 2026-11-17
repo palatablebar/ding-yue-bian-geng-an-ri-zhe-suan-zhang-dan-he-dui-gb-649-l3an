@@ -13,11 +13,16 @@ from ... import config
 
 INVOICE_HEADER = [
     "账单号", "订阅号", "账户", "期间起", "期间止", "期间天数", "计费天数", "免费天数",
-    "分段合计(元)", "抵扣合计(元)", "账单额(元)", "状态", "校验位", "标记",
+    "套餐费(元)", "抵扣合计(元)", "超额费(元)", "账单额(元)", "状态", "校验位", "标记",
 ]
 SEGMENT_HEADER = [
     "账单号", "订阅号", "段序", "起", "止", "天数", "套餐", "状态", "月价(元)",
-    "日价(元)", "分段金额(元)", "原始行号", "标记",
+    "日价(元)", "分段金额(元)", "计量单位", "段包含额度", "段分摊用量", "段超额用量",
+    "段超额金额(元)", "原始行号", "标记",
+]
+OVERAGE_HEADER = [
+    "账单号", "订阅号", "段序", "套餐", "覆盖天数", "计量单位", "段包含额度",
+    "段分摊用量", "超额用量", "超额单价(元)", "超额金额(元)", "标记",
 ]
 
 
@@ -46,8 +51,8 @@ def invoices_csv(rows: list[dict], check_digit: str) -> str:
             row["invoice_id"], row["sub_id"], row["account"], row["period_start"],
             row["period_end"], row["period_days"], row["billed_days"], row["free_days"],
             money(row["charge_cents"]), money(row["credit_cents"]),
-            money(row["total_cents"]), config.INVOICE_STATUS_LABELS.get(row["status"],
-                                                                        row["status"]),
+            money(row.get("overage_cents", 0)), money(row["total_cents"]),
+            config.INVOICE_STATUS_LABELS.get(row["status"], row["status"]),
             check_digit, flags_text(row["flags"]),
         ])
     return buffer.getvalue()
@@ -63,10 +68,37 @@ def segments_csv(rows: list[dict], invoice_by_id: dict) -> str:
             row["end_date"], row["days"], row["plan"],
             config.STATE_LABELS.get(row["state"], row["state"]),
             money_text(row["monthly"]), row.get("daily", ""),
-            money(row["amount_cents"]), invoice.get("source_row", ""),
-            flags_text(row["flags"]),
+            money(row["amount_cents"]), row.get("metric", ""),
+            units_text(row.get("included_units", "0")),
+            units_text(row.get("allocated_units", "0")),
+            units_text(row.get("overage_units", "0")),
+            money(row.get("overage_cents", 0)),
+            invoice.get("source_row", ""), flags_text(row["flags"]),
         ])
     return buffer.getvalue()
+
+
+def overages_csv(rows: list[dict], invoice_by_id: dict) -> str:
+    buffer, writer = _writer()
+    writer.writerow(OVERAGE_HEADER)
+    for row in rows:
+        writer.writerow([
+            row["invoice_id"], row["sub_id"], row["segment_seq"], row["plan"],
+            row["days"], row.get("metric", ""),
+            units_text(row.get("included_units", "0")),
+            units_text(row.get("allocated_units", "0")),
+            units_text(row.get("overage_units", "0")),
+            money_text(row.get("unit_price", "0")),
+            money(row["cents"]), flags_text(row["flags"]),
+        ])
+    return buffer.getvalue()
+
+
+def units_text(text) -> str:
+    """用量：最多两位小数，末尾不补零；保留解析后的精确值用于复核。"""
+    value = Decimal(str(text or "0"))
+    normalized = value.normalize()
+    return f"{normalized:f}"
 
 
 def with_bom(text: str) -> str:

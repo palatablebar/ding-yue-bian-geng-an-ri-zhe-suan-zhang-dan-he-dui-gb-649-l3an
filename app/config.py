@@ -53,6 +53,29 @@ CHANGE_COLUMNS = {
     "new_price": ("新月价(元)", ("新月价(元)", "新月价", "新价格")),
 }
 
+# 用量表列：整月汇总用量，只有订阅号与用量是必需列
+USAGE_COLUMNS = {
+    "sub_id": ("订阅号", ("订阅号", "订阅ID", "订阅编号", "账号编号")),
+    "units": ("用量", ("用量", "使用量", "月用量", "消费量", "消耗量")),
+    "metric": ("计量单位", ("计量单位", "单位", "指标", "用量单位")),
+}
+
+# 套餐额度目录：套餐 → (计量单位, 包含额度, 超额单价元)。
+# 样例目录存在 plans.csv 时以文件为准；否则用这份内置目录。
+PLAN_CATALOG_COLUMNS = {
+    "plan": ("套餐", ("套餐", "套餐名", "产品")),
+    "metric": ("计量单位", ("计量单位", "单位", "指标")),
+    "included": ("包含额度", ("包含额度", "包含用量", "免费额度", "额度")),
+    "unit_price": ("超额单价(元)", ("超额单价(元)", "超额单价", "超量单价", "单价")),
+}
+PLAN_CATALOG_REQUIRED = ("plan", "included", "unit_price")
+
+DEFAULT_PLAN_CATALOG = {
+    "基础版": ("GB", Decimal("100"), Decimal("0.50")),
+    "标准版": ("GB", Decimal("500"), Decimal("0.30")),
+    "专业版": ("GB", Decimal("2000"), Decimal("0.20")),
+}
+
 STATE_LABELS = {
     "active": "生效中",
     "paused": "已暂停",
@@ -122,6 +145,7 @@ class Settings:
     rule_version: str = RULE_VERSION
     default_subscriptions: str = "subscriptions_dirty.csv"
     default_changes: str = "changes_dirty.csv"
+    default_usage: str = ""
     export_dir: str = str(PROJECT_ROOT / "var" / "export")
 
     @classmethod

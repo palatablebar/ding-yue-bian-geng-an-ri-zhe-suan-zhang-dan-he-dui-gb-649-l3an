@@ -13,7 +13,7 @@ from ... import reasons
 from ...reasons import level_of
 from ..m1_ingest import columns as column_mod
 from ..m2_calendar import service as calendar_service
-from . import quarantine, rules
+from . import quarantine, rules, usage as usage_mod
 
 REQUIRED_SUB = column_mod.SUB_REQUIRED
 REQUIRED_CHANGE = column_mod.CHANGE_REQUIRED
@@ -324,31 +324,65 @@ def _resolve_same_day(records: list[dict], entries: list[dict], file: str) -> No
                                       detail=f"{sub_id} 同一时刻多条变更"))
 
 
-def prepare(store, run_id: str, sub_table, change_table, settings) -> dict:
+def prepare(store, run_id: str, sub_table, change_table, settings,
+            usage_table=None) -> dict:
     """把两张表归一成订阅与变更记录，落库并返回计数器。"""
     subs, sub_entries, sub_counts = _normalize_subscriptions(sub_table, settings)
     changes, change_entries, change_counts = _normalize_changes(change_table, subs, settings)
-    entries = sorted(sub_entries + change_entries,
-                     key=lambda item: (item["file"], item["row_no"], item["code"]))
+
+    usage_rows, usage_entries, usage_counts = [], [], None
+    if usage_table is not None:
+        usage_rows, usage_entries, usage_counts = usage_mod.normalize_usage(usage_table)
+        usage_rows, unknown_entries = usage_mod.annotate_unknown_subscriptions(
+            usage_rows, subs)
+        usage_entries = usage_entries + unknown_entries
+        usage_counts["kept"] = len(usage_rows)
+        usage_counts["quarantined_rows"] = usage_mod.count_error_rows(usage_entries)
+        usage_counts["dropped_dup"] = sum(
+            1 for item in usage_entries if item["code"] == "R_DUP_USAGE_ROW")
+
+    entries = usage_mod.merge_entries(sub_entries, change_entries, usage_entries)
     store.put_subscriptions(run_id, subs)
     store.put_changes(run_id, changes)
+    if usage_table is not None:
+        store.replace_usage_rows(run_id, usage_rows)
+        store.add_usage_file(run_id, {
+            "name": usage_table.name,
+            "sha256": usage_table.sha256,
+            "encoding": usage_table.encoding,
+            "bytes": usage_table.size,
+            "rows": usage_table.data_rows,
+        })
+    plans, plan_source = usage_mod.load_plan_catalog(settings.sample_dir)
+    store.put_plans(run_id, usage_mod.build_plans(plans))
     store.put_quarantine(run_id, entries)
 
     counters = {
-        "rows_read": sub_counts["rows"] + change_counts["rows"],
+        "rows_read": sub_counts["rows"] + change_counts["rows"]
+        + (usage_counts["rows"] if usage_counts else 0),
         "sub_rows": sub_counts["rows"],
         "change_rows": change_counts["rows"],
+        "usage_rows": usage_counts["rows"] if usage_counts else 0,
         "subs_kept": sub_counts["kept"],
         "subs_dropped_dup": sub_counts["dropped_dup"],
         "changes_kept": change_counts["kept"],
+        "usage_kept": usage_counts["kept"] if usage_counts else 0,
         "changes_superseded": sum(1 for item in changes if not item["applied"]),
-        "blank_rows": sub_counts["blank_rows"] + change_counts["blank_rows"],
-        "repeated_headers": sub_counts["repeated_headers"] + change_counts["repeated_headers"],
+        "blank_rows": (sub_counts["blank_rows"] + change_counts["blank_rows"]
+                       + (usage_counts["blank_rows"] if usage_counts else 0)),
+        "repeated_headers": (sub_counts["repeated_headers"]
+                             + change_counts["repeated_headers"]
+                             + (usage_counts["repeated_headers"] if usage_counts else 0)),
         "quarantined_rows": (sub_counts["quarantined_rows"]
-                             + change_counts["quarantined_rows"]),
+                             + change_counts["quarantined_rows"]
+                             + (usage_counts["quarantined_rows"] if usage_counts else 0)),
         "quarantine_entries": len(entries),
-        "dropped_dup": sub_counts["dropped_dup"] + change_counts["dropped_dup"],
-        "truncated_rows": sub_counts["truncated"] + change_counts["truncated"],
+        "dropped_dup": (sub_counts["dropped_dup"] + change_counts["dropped_dup"]
+                        + (usage_counts["dropped_dup"] if usage_counts else 0)),
+        "truncated_rows": (sub_counts["truncated"] + change_counts["truncated"]
+                           + (usage_counts["truncated"] if usage_counts else 0)),
+        "usage_files": 1 if usage_table is not None else 0,
+        "plan_source": plan_source,
     }
     counters["quarantine_by_level"] = {
         level: sum(1 for item in entries if item["level"] == level)
@@ -358,6 +392,8 @@ def prepare(store, run_id: str, sub_table, change_table, settings) -> dict:
     return {
         "subscriptions": subs,
         "changes": changes,
+        "usage": usage_rows,
+        "usage_counts": usage_counts,
         "entries": entries,
         "counters": counters,
         "distribution": quarantine.distribution(entries),

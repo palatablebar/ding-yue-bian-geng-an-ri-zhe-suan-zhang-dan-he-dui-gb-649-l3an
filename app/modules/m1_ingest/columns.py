@@ -71,3 +71,14 @@ def looks_like_header(fields: list[str], spec: dict) -> bool:
 def column_count_ok(row_fields: list[str], header_len: int) -> bool:
     """严格等长；多一列、少一列都按列数不符隔离，不做补空。"""
     return len(row_fields) == header_len
+
+
+def usage_header(header: list[str]) -> HeaderMap:
+    return map_header(header, config.USAGE_COLUMNS)
+
+
+def plan_header(header: list[str]) -> HeaderMap:
+    return map_header(header, config.PLAN_CATALOG_COLUMNS)
+
+
+USAGE_REQUIRED = ("sub_id", "units")

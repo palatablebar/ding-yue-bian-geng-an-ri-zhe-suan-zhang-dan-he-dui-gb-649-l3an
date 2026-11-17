@@ -15,10 +15,32 @@
       <label for="chg-file">变更文件</label>
       <input type="text" id="chg-file" value="{{ sample_changes }}" autocomplete="off">
     </div>
+    <div class="field">
+      <label for="usage-file">用量文件（可选）</label>
+      <input type="text" id="usage-file" value="{{ sample_usage }}" autocomplete="off"
+             placeholder="整月用量，如 usage_dirty.csv">
+    </div>
     <button class="btn" type="button" id="run-import">采信</button>
     <span class="toast" id="import-toast" role="status"></span>
   </div>
 </section>
+
+{% if has_run %}
+<section class="block">
+  <div class="block-head">
+    <h2>补录用用量</h2>
+    <span class="sub">同一份文件重试不会重复累计；失败则保留上一版账单</span>
+  </div>
+  <div class="form-row">
+    <div class="field">
+      <label for="usage-append">用量文件</label>
+      <input type="text" id="usage-append" value="{{ sample_usage }}" autocomplete="off">
+    </div>
+    <button class="btn" type="button" id="run-usage">补录并重算</button>
+    <span class="toast" id="usage-toast" role="status"></span>
+  </div>
+</section>
+{% endif %}
 
 <section class="block">
   <div class="block-head">
@@ -65,7 +87,7 @@
 <section class="block">
   <div class="block-head">
     <h2>阶段</h2>
-    <span class="sub">{{ totals.get("invoices", 0) }} 张账单 · {{ totals.get("invoice_cents", 0)|money }} 元</span>
+    <span class="sub">{{ totals.get("invoices", 0) }} 张账单 · {{ totals.get("invoice_cents", 0)|money }} 元 · 超额 {{ totals.get("overage_rows", 0) }} 条 / {{ totals.get("overage_cents", 0)|money }} 元</span>
   </div>
   <div class="table-wrap">
     <table class="table">

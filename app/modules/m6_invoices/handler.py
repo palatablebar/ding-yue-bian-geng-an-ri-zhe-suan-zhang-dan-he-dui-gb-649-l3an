@@ -36,3 +36,11 @@ def reconcile(request: Request) -> dict:
         "ledgers": store.list_reconciliations(run["run_id"]),
         "totals": store.list_totals(run["run_id"]),
     }
+
+
+@router.get("/overages")
+def overages(request: Request) -> dict:
+    """每条超额记录都带账单号与段序，可追到对应套餐分段。"""
+    run = web.run_or_404(request)
+    rows = request.app.state.store.list_overages(run["run_id"])
+    return {"run_id": run["run_id"], "total": len(rows), "overages": rows}

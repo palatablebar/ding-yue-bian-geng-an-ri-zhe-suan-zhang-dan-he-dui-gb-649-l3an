@@ -29,10 +29,11 @@ def recompute(request: Request) -> dict:
     run = web.run_or_404(request)
     store = request.app.state.store
     settings = request.app.state.settings
-    result = service.recompute_amounts(store, run["run_id"], settings)
     from ..m6_invoices import service as invoice_service
 
-    invoices = invoice_service.rebuild(store, run["run_id"], settings)
+    with store.rebuild_transaction(run["run_id"]):
+        result = service.recompute_amounts(store, run["run_id"], settings)
+        invoices = invoice_service.rebuild(store, run["run_id"], settings)
     return {
         "run_id": run["run_id"],
         "proration": result,

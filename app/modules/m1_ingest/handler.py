@@ -20,10 +20,11 @@ def import_sample(request: Request,
     body = payload or {}
     sub_name = body.get("subscriptions")
     change_name = body.get("changes")
-    for value in (sub_name, change_name):
+    usage_name = body.get("usage")
+    for value in (sub_name, change_name, usage_name):
         if value is not None and (not isinstance(value, str) or not value.strip()):
             raise BadRequest("文件名不能为空", code="E_BAD_FILE_NAME")
-    data = service.import_sample(store, settings, sub_name, change_name)
+    data = service.import_sample(store, settings, sub_name, change_name, usage_name)
     data["check_digit"] = data.get("check_digit") or ""
     return data
 

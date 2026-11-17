@@ -26,6 +26,7 @@ def _status(diff) -> str:
 def row_ledger(counters: dict) -> dict:
     left = int(counters.get("rows_read", 0))
     right = (int(counters.get("subs_kept", 0)) + int(counters.get("changes_kept", 0))
+             + int(counters.get("usage_kept", 0))
              + int(counters.get("quarantined_rows", 0))
              + int(counters.get("dropped_dup", 0))
              + int(counters.get("blank_rows", 0))
@@ -34,7 +35,7 @@ def row_ledger(counters: dict) -> dict:
         "ledger": "rows", "label": "行数账",
         "left_text": str(left), "right_text": str(right),
         "diff_text": str(left - right), "status": _status(left - right),
-        "note": "可用 + 隔离 + 丢弃 + 空白 + 重复表头",
+        "note": "可用订阅 + 可用变更 + 可用用量 + 隔离 + 丢弃 + 空白 + 重复表头",
     }
 
 
@@ -50,20 +51,23 @@ def day_ledger(invoices: list[dict]) -> dict:
 
 
 def amount_ledger(invoices: list[dict], components: list[dict],
-                  segments: list[dict]) -> dict:
+                  segments: list[dict], overages: list[dict] | None = None) -> dict:
+    overages = overages or []
     charge = sum(int(row["cents"]) for row in components if row["kind"] == "charge")
     credit = -sum(int(row["cents"]) for row in components if row["kind"] == "credit")
+    overage = sum(int(row["cents"]) for row in overages)
     billed = sum(int(row["total_cents"]) for row in invoices)
-    left = charge
+    left = charge + overage
     right = credit + billed
     exact_segments = sum((Decimal(row["amount_exact"]) for row in segments), Decimal("0"))
+    exact_overage = sum((Decimal(row["exact_text"]) for row in overages), Decimal("0"))
     exact_invoices = sum((Decimal(row["exact_total"]) for row in invoices), Decimal("0"))
-    gap = exact_segments - exact_invoices
+    gap = exact_segments + exact_overage - exact_invoices
     return {
         "ledger": "amount", "label": "金额账",
         "left_text": str(left), "right_text": str(right),
         "diff_text": str(left - right), "status": _status(left - right),
-        "note": f"单位分；精确额差 {gap}",
+        "note": f"单位分；套餐费 + 超额；精确额差 {gap}",
     }
 
 
@@ -79,11 +83,11 @@ def invoice_ledger(invoices: list[dict], segments: list[dict]) -> dict:
 
 
 def build(*, counters: dict, invoices: list[dict], segments: list[dict],
-          components: list[dict]) -> list[dict]:
+          components: list[dict], overages: list[dict] | None = None) -> list[dict]:
     rows = [
         row_ledger(counters),
         day_ledger(invoices),
-        amount_ledger(invoices, components, segments),
+        amount_ledger(invoices, components, segments, overages),
         invoice_ledger(invoices, segments),
     ]
     for index, row in enumerate(rows):
@@ -102,9 +106,11 @@ def overall(ledgers: list[dict]) -> dict:
 
 
 def totals(counters: dict, invoices: list[dict], segments: list[dict],
-           components: list[dict]) -> dict:
+           components: list[dict], overages: list[dict] | None = None) -> dict:
+    overages = overages or []
     charge = sum(int(row["cents"]) for row in components if row["kind"] == "charge")
     credit = -sum(int(row["cents"]) for row in components if row["kind"] == "credit")
+    overage = sum(int(row["cents"]) for row in overages)
     return {
         "subs_kept": int(counters.get("subs_kept", 0)),
         "changes_kept": int(counters.get("changes_kept", 0)),
@@ -115,14 +121,19 @@ def totals(counters: dict, invoices: list[dict], segments: list[dict],
         "invoices": len(invoices),
         "segments": len(segments),
         "components": len(components),
+        "overages": len(overages),
+        "overage_rows": sum(1 for row in overages if Decimal(row["overage_units"]) > 0),
         "period_days": sum(int(row["period_days"]) for row in invoices),
         "billed_days": sum(int(row["billed_days"]) for row in invoices),
         "free_days": sum(int(row["free_days"]) for row in invoices),
         "charge_cents": charge,
         "credit_cents": credit,
+        "overage_cents": overage,
         "invoice_cents": sum(int(row["total_cents"]) for row in invoices),
         "zero_invoices": sum(1 for row in invoices if row["total_cents"] == 0),
         "segment_exact_total": str(sum(
             (Decimal(row["amount_exact"]) for row in segments), Decimal("0"))),
+        "overage_exact_total": str(sum(
+            (Decimal(row["exact_text"]) for row in overages), Decimal("0"))),
         "money_unit": config.MONEY_UNIT,
     }

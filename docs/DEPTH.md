@@ -12,9 +12,9 @@
 | M2 期间日历 | 查每个订阅的期间天数、闰日与半开区间 | GET /api/calendar | `app/modules/m2_calendar/days.py` `app/modules/m2_calendar/halfopen.py` | `tests/test_calendar.py` `tests/test_calendar_dst.py` |
 | M3 质量隔离 | 看原因码分布、原始行号与原值，导出隔离 CSV | GET /api/quarantine | `app/modules/m3_quality/rules.py` `app/modules/m3_quality/quarantine.py` | `tests/test_quality.py` `tests/test_quality_money.py` |
 | M4 按日折算 | 看每段日价与金额，必要时重算 | GET /api/proration | `app/modules/m4_proration/prorate.py` `app/modules/m4_proration/rounding.py` | `tests/test_proration.py` `tests/test_rounding.py` |
-| M5 变更抵扣 | 看变更序列、被替代关系与抵扣行 | GET /api/changes | `app/modules/m5_changes/segments.py` `app/modules/m5_changes/credit.py` | `tests/test_changes.py` `tests/test_credit.py` |
-| M6 账单对账 | 出账、点行看明细、核对四本账 | GET /api/invoices | `app/modules/m6_invoices/invoice.py` `app/modules/m6_invoices/reconcile.py` | `tests/test_invoices.py` `tests/test_reconcile.py` |
-| M7 导出 | 导出账单 CSV、分段 CSV、运行清单 JSON | GET /api/export/invoices.csv | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_export.py` `tests/test_export_manifest.py` |
+| M5 变更抵扣 | 看变更序列、被替代关系、抵扣行与超额行 | GET /api/changes | `app/modules/m5_changes/segments.py` `app/modules/m5_changes/credit.py` `app/modules/m5_changes/usage.py` | `tests/test_changes.py` `tests/test_credit.py` `tests/test_overage.py` |
+| M6 账单对账 | 出账、点行看明细、核对四本账、看超额明细 | GET /api/invoices | `app/modules/m6_invoices/invoice.py` `app/modules/m6_invoices/reconcile.py` | `tests/test_invoices.py` `tests/test_reconcile.py` |
+| M7 导出 | 导出账单 CSV、分段 CSV、超额 CSV、运行清单 JSON | GET /api/export/invoices.csv | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/manifest_out.py` | `tests/test_export.py` `tests/test_export_manifest.py` |
 
 端到端与不变量分别由 `tests/test_e2e.py`、`tests/test_invariants.py` 固定。
 
@@ -33,19 +33,33 @@
 | TRAP-23 | 期间端点归属与相邻段接缝 | 两端都算，重复计一天 | 半开 `[start, end)`，相邻段 end 等于下段 start | `app/modules/m5_changes/segments.py`、`app/modules/m2_calendar/days.py` | `tests/test_calendar.py::test_adjacent_segments_cover_period`、`tests/test_changes.py::test_change_on_period_start_zero_day_segment` |
 | TRAP-24 | 抵扣行、补收行各自四舍五入 | 分完合计比总额多 1 分 | 最大余额法把差额补到小数余额最大的分量，负数抵扣同样成立 | `app/modules/m4_proration/rounding.py` | `tests/test_rounding.py::test_largest_remainder_keeps_total`、`tests/test_credit.py::test_component_cents_sum_to_invoice` |
 | TRAP-25 | 同一订阅同一时刻两条变更 | 取到哪条看文件顺序，重跑结果会变 | 同日只让 (生效时刻, 变更号) 最小的一条生效，其余标 `R_CHANGE_OVERLAP` 并记替代关系 | `app/modules/m3_quality/service.py`、`app/modules/m5_changes/segments.py` | `tests/test_changes.py::test_same_instant_overlap_deterministic`、`tests/test_invariants.py::test_change_order_independence` |
+| TRAP-26 | 月中升级，运营希望升级当天按新套餐整额给足包含额度 | 新套餐整额 + 旧套餐整额在同一个月同时成立，等于把旧套餐已覆盖的天数再送一遍，月底少收 | 额度只随各套餐实际覆盖天数成立：`套餐额度 × 段天数 ÷ 期间天数` | `app/modules/m5_changes/usage.py`、`app/modules/m5_changes/service.py` | `tests/test_overage.py::test_upgrade_day_does_not_grant_full_quota` |
+| TRAP-27 | 整月用量文件没有时间戳，却有多个套餐分段 | 把整月用量记到一段上，或每段都按整月用量算，超额翻倍 | 用量按段天数比例分摊；每条超额带 `(账单号, 段序)`，可追到分段 | `app/modules/m5_changes/usage.py` | `tests/test_overage.py::test_quota_prorates_by_segment_days`、`tests/test_overage.py::test_every_overage_traces_to_segment` |
+| TRAP-28 | 同一份用量文件重复上传 | 用量累加两次，超额翻倍 | 用量文件按 `(run_id, sha256)` 唯一登记，重试直接返回 | `app/store.py`、`app/modules/m5_changes/service.py` | `tests/test_overage.py::test_usage_import_is_idempotent` |
+| TRAP-29 | 重算中途异常 | 派生表删了一半，页面与导出看到残批 | 先快照派生表与清单，失败原样写回，页面/导出继续显示旧账单 | `app/store.py::rebuild_transaction` | `tests/test_overage.py::test_failed_recompute_restores_previous_invoice` |
 
 ## 对账规则
 
-- 行数账：输入数据行 = 可用订阅 + 可用变更 + 隔离行 + 丢弃重复行 + 空白行 + 重复表头
+- 行数账：输入数据行 = 可用订阅 + 可用变更 + 可用用量 + 隔离行 + 丢弃重复行 + 空白行 + 重复表头
 - 期间天数账：账单期间天数 = 计费天数 + 免费/暂停天数
-- 金额账：分段合计（分） = 抵扣合计（分） + 账单额合计（分）
+- 金额账：套餐费合计 + 超额合计（分） = 抵扣合计（分） + 账单额合计（分）
 - 出账账：账单行数 = 有分段的账单数
-- 恒等式：预缴整期 − Σ抵扣 + Σ补收 = Σ(各段费率 × 段天数)
+- 恒等式：预缴整期 − Σ抵扣 + Σ补收 + Σ超额 = Σ(各段费率 × 段天数) + Σ(段超额 × 单价)
+
+## 超额定稿口径
+
+- 份额公式唯一：`share(值, 段天数, 期间天数)`，金额与额度都用它，分母永远是期间实际天数。
+- 额度不整额预发：升级日之后的新套餐只拿到 `新套餐额度 × 剩余天数 / 期间天数`。
+- 用量整月汇总 → 按段天数分摊 → 逐段扣该段额度 → 逐段超额 → 单账单内最大余额分到分。
+- 每张账单：Σ段超额（分）= 账单超额（分）；页面、`/api/overages`、`/api/export/overages.csv` 同源。
+- 重算幂等：同输入重跑行数与合计逐字不变；失败则恢复旧版账单与清单。
+- 未上传用量不做超额；上传后无超额的段也留 0 额证据行，便于人工确认已核对。
 
 ## 已知不覆盖
 
 - 只读 CSV 导出文件，不解析 xlsx；浏览器下载的表格需先另存为 CSV。
 - 汇率与多币种未做：样例统一人民币，币种列固定 `CNY`。
+- 用量只有整月汇总，没有逐日时间戳：跨套餐的用量只能按段天数分摊，不做「某天突发用量归到当天套餐」。
 - 变更只支持整日生效：生效时刻按本地日 0 点取整并标记，不做小时级折算。
 - 账期只支持自然月：跨月、跨年区间可算天数，但界面上不提供自定义账期模板。
 - 未做并发写保护：单实例 SQLite，写入串行；多实例部署需要改为外部数据库。
